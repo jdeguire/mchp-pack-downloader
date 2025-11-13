@@ -38,23 +38,109 @@
 # for and download only the latest versions of packs. If you are building a toolchain, then you
 # should make an archive of your sources and packs so you can build those at any time in the future.
 #
-# You can modify what packs this script will look for by editing the 'should_get_this_pack()' function.
+# You can modify what packs this script will look for by editing the 'keep_this_pack()' method in
+# the DevicePack class below.
 #
 
 from html.parser import HTMLParser
+from pathlib import Path
+import os
 import urllib.request
 
-# Edit this if you have a different pack repo you want to download from.
 PACKS_REPO_URL = 'https://packs.download.microchip.com/'
+PACKS_EXTENSION = '.atpack'
+
+THIS_FILE_DIR = Path(os.path.dirname(os.path.realpath(__file__)))
+DOWNLOAD_DIR = THIS_FILE_DIR / 'dl'
+PACKS_DIR = THIS_FILE_DIR / 'packs'
 
 
-def should_get_this_pack(name: str) -> bool:
-    ''' Return True if the given pack name appears to be for a device we want to support.
+class DevicePack:
+    '''Represents a single device pack that you would download from Microchip's pack repository.
 
-    For now, this will look for 32-bit ARM devices such as the SAM and PIC32C devices. You can edit
-    this function if you want to download packs for other devices.
+    This is here mainly to help parse the names of the packs to extract the devices they apply to
+    and to get their version. Pack names from Microchip have the following form:
+
+        Manufacturer.DeviceFamily.X.Y.Z.atpack
+    
+    For example: "Microchip.SAML10_DFP.3.5.87.atpack"
+
+    Notice that the DeviceFamily portion ends in "_DFP". Tool packs for things like debuggers will
+    instead end in "_TP". ARM's CMSIS is also distributed in packs, so the manufacturer might be
+    "ARM" instead of "Microchip".
     '''
-    return True
+
+    def __init__(self, name:str):
+        '''Make a new DevicePack object with the given filename.
+
+        Use the filename that was retrieved from the packs repository URL, including the extension.
+        '''
+        # Handle the case of the name from the repo being a path. Split the file name from the rest
+        # of the path at the last '/' and then get the last element of the array.
+        self.name: str = name.rsplit('/', 1)[-1]
+
+        # Now parse the name further to get other info.
+        parts: list[str] = self.name.split('.')
+
+        if len(parts) != 6:
+            raise ValueError(f'Unexpected pack name format for pack {self.name}')
+        
+        self.manufacturer: str = parts[0]
+        self.family: str = parts[1]
+
+        # For now, let each version part have up to five digits.
+        try:
+            self.version: int = (10_000_000_000 * int(parts[2])  +
+                                 100_000 * int(parts[3])  +
+                                 int(parts[4]))
+        except ValueError:
+            raise ValueError(f'Unable to parse version from pack name {self.name}')
+
+        self.extension = parts[5]
+
+
+    def keep_this_pack(self) -> bool:
+        '''Return True if the name of this pack appears to be for a device series we want to support.
+
+        For now, this will look for 32-bit ARM devices such as the SAM and PIC32C devices. You can edit
+        this function if you want to download packs for other devices.
+        '''
+        return True
+
+
+    def get_name(self) -> str:
+        '''Return the name of the pack, not including any path compoenents, that was passed to the
+        constructor.
+        '''
+        return self.name
+
+
+    def get_manufacturer(self) -> str:
+        '''Return the manufacturer provided in the pack name.
+        '''
+        return self.manufacturer
+
+
+    def get_family(self) -> str:
+        '''Return the device family provided in the pack name.
+        '''
+        return self.family
+
+
+    def get_version(self) -> int:
+        '''Return the pack version as parsed from the pack name.
+
+        If the version in the pack name is "x.y.z", then this will return
+
+            (x * 10_000_000_000) + (y * 100_000) + z.
+        '''
+        return self.version
+    
+
+    def get_extension(self) -> str:
+        '''Return the extension of the pack filename.
+        '''
+        return self.extension
 
 
 class PacksHtmlParser(HTMLParser):
@@ -65,10 +151,11 @@ class PacksHtmlParser(HTMLParser):
     https://docs.python.org/3/library/html.parser.html#module-html.parser. Have a look there to get
     a better idea of what this is doing. See the main code below to see how to use this class.
     '''
+
     def __init__(self):
         super().__init__()
 
-        self.links: list[str] = []
+        self.links: list[DevicePack] = []
 
 
     def get_pack_links(self):
@@ -99,16 +186,16 @@ class PacksHtmlParser(HTMLParser):
             for attr in attrs:
                 if 'download' == attr[0]:
                     download = True
-                elif 'href' == attr[0]  and  attr[1]  and  attr[1].endswith('.atpack'):
+                elif 'href' == attr[0]  and  attr[1]  and  attr[1].endswith(PACKS_EXTENSION):
                     href = attr[1]
 
             if download:
                 # We found a valid pack download link, so hold onto it.
-                self.links.append(href)
+                self.links.append(DevicePack(href))
 
 
 if '__main__' == __name__:
-    pack_links: list[str] = []
+    pack_links: list[DevicePack] = []
 
     with urllib.request.urlopen(PACKS_REPO_URL, data=None, timeout=10.0) as req:
         # Grab the HTML from the packs URL.
@@ -122,5 +209,5 @@ if '__main__' == __name__:
         # Now that the parser has parsed the HTML, we can see what links to packs it has found.
         pack_links = parser.get_pack_links()
     
-    for link in pack_links:
-        print(link)
+    for pack in pack_links:
+        print(pack.get_family() + ' ' + str(pack.get_version()))
