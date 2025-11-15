@@ -70,23 +70,27 @@ class DevicePack:
     "ARM" instead of "Microchip".
     '''
 
-    def __init__(self, name:str):
-        '''Make a new DevicePack object with the given filename.
+    def __init__(self, path:str):
+        '''Make a new DevicePack object with the given path.
 
-        Use the filename that was retrieved from the packs repository URL, including the extension.
+        Use the filename that was retrieved from the packs repository URL, including the extension
+        and any path compoents.
         '''
-        # Handle the case of the name from the repo being a path. Split the file name from the rest
-        # of the path at the last '/' and then get the last element of the array.
-        self.name: str = name.rsplit('/', 1)[-1]
+        self.path: str = path
+
+        # Split the file name from the rest of the path at the last '/' if one was present. The
+        # pack filename will be the last element of this array.
+        name = path.rsplit('/', 1)[-1]
 
         # Now parse the name further to get other info.
-        parts: list[str] = self.name.split('.')
+        parts: list[str] = name.split('.')
 
         if len(parts) != 6:
-            raise ValueError(f'Unexpected pack name format for pack {self.name}')
+            raise ValueError(f'Unexpected pack name format for pack {self.path}')
         
         self.manufacturer: str = parts[0]
         self.family: str = parts[1]
+        self.version_str: str = f'{parts[2]}.{parts[3]}.{parts[4]}'
 
         # For now, let each version part have up to five digits.
         try:
@@ -94,7 +98,7 @@ class DevicePack:
                                  100_000 * int(parts[3])  +
                                  int(parts[4]))
         except ValueError:
-            raise ValueError(f'Unable to parse version from pack name {self.name}')
+            raise ValueError(f'Unable to parse version from pack {self.path}')
 
         self.extension = parts[5]
 
@@ -102,17 +106,46 @@ class DevicePack:
     def keep_this_pack(self) -> bool:
         '''Return True if the name of this pack appears to be for a device series we want to support.
 
-        For now, this will look for 32-bit ARM devices such as the SAM and PIC32C devices. You can edit
-        this function if you want to download packs for other devices.
+        This works as a whitelist in that it looks for packs that we know are for devices we can
+        support. Update these checks if you want to add other devices, like the 8-bit AVR chips.
         '''
-        return True
+        # Check for Microchip parts.
+        if self.get_manufacturer() != 'Microchip':
+            return False
 
 
-    def get_name(self) -> str:
-        '''Return the name of the pack, not including any path compoenents, that was passed to the
-        constructor.
+        family: str = self.get_family().lower()
+
+        # Tool packs for things like debuggers and programmers. We do not want these.
+        if family.endswith('_tp'):
+            return False
+
+        # Look for the most common ARM devices first.
+        if family.startswith('sam')  or  family.startswith('pic32c'):
+            return True
+
+        # Some PIC32W wireless parts have ARM CPUs.
+        if family.startswith('pic32w'):
+            return True
+
+        # These seem to be embedded controllers for things like keyboards. At least some of these
+        # have ARM CPUs in them.
+        if family.startswith('cec')  or  family.startswith('dec')  or  family.startswith('mec'):
+            return True
+
+        # LoRa modules with ARM CPUs.
+        if family.startswith('wrl'):
+            return True
+
+        # Else assume it is a pack we do not want. Update the above checks if you want to add a new
+        # device series.
+        return False
+
+
+    def get_path(self) -> str:
+        '''Return the path that was passed to the constructor of this object.
         '''
-        return self.name
+        return self.path
 
 
     def get_manufacturer(self) -> str:
@@ -136,6 +169,12 @@ class DevicePack:
         '''
         return self.version
     
+
+    def get_version_string(self) -> str:
+        '''Return the pack version as a string in X.Y.Z format.
+        '''
+        return self.version_str
+
 
     def get_extension(self) -> str:
         '''Return the extension of the pack filename.
@@ -190,8 +229,11 @@ class PacksHtmlParser(HTMLParser):
                     href = attr[1]
 
             if download:
-                # We found a valid pack download link, so hold onto it.
-                self.links.append(DevicePack(href))
+                # We found a valid pack download link, so hold onto it if it's a pack we care about.
+                pack = DevicePack(href)
+
+                if pack.keep_this_pack():
+                    self.links.append(pack)
 
 
 if '__main__' == __name__:
@@ -209,5 +251,17 @@ if '__main__' == __name__:
         # Now that the parser has parsed the HTML, we can see what links to packs it has found.
         pack_links = parser.get_pack_links()
     
+
+    # Now that we have our links, search for and keep only the latest versions of packs.
+    latest_packs: dict[str, DevicePack] = {}
     for pack in pack_links:
-        print(pack.get_family() + ' ' + str(pack.get_version()))
+        family = pack.get_family()
+
+        if family in latest_packs:
+            if pack.get_version() > latest_packs[family].get_version():
+                latest_packs[family] = pack
+        else:
+            latest_packs[family] = pack
+    
+    for family, pack in latest_packs.items():
+        print(f'Latest version of pack {family} is {pack.get_version_string()}')
