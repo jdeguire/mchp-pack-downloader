@@ -45,6 +45,7 @@
 from html.parser import HTMLParser
 from pathlib import Path
 import os
+import shutil
 import urllib.request
 
 PACKS_REPO_URL = 'https://packs.download.microchip.com/'
@@ -80,10 +81,10 @@ class DevicePack:
 
         # Split the file name from the rest of the path at the last '/' if one was present. The
         # pack filename will be the last element of this array.
-        name = path.rsplit('/', 1)[-1]
+        self.name = path.rsplit('/', 1)[-1]
 
         # Now parse the name further to get other info.
-        parts: list[str] = name.split('.')
+        parts: list[str] = self.name.split('.')
 
         if len(parts) != 6:
             raise ValueError(f'Unexpected pack name format for pack {self.path}')
@@ -121,7 +122,7 @@ class DevicePack:
             return False
 
         # Look for the most common ARM devices first.
-        if family.startswith('sam')  or  family.startswith('pic32c'):
+        if family.startswith('atsam')  or  family.startswith('sam')  or  family.startswith('pic32c'):
             return True
 
         # Some PIC32W wireless parts have ARM CPUs.
@@ -146,6 +147,12 @@ class DevicePack:
         '''Return the path that was passed to the constructor of this object.
         '''
         return self.path
+
+
+    def get_name(self) -> str:
+        '''Return the name component of the path that was passed to the constructor of this object.
+        '''
+        return self.name
 
 
     def get_manufacturer(self) -> str:
@@ -180,6 +187,7 @@ class DevicePack:
         '''Return the extension of the pack filename.
         '''
         return self.extension
+
 
 
 class PacksHtmlParser(HTMLParser):
@@ -236,6 +244,7 @@ class PacksHtmlParser(HTMLParser):
                     self.links.append(pack)
 
 
+
 if '__main__' == __name__:
     pack_links: list[DevicePack] = []
 
@@ -263,5 +272,26 @@ if '__main__' == __name__:
         else:
             latest_packs[family] = pack
     
+
+    # Clear out any previously downloaded pack data
+    if os.path.exists(DOWNLOAD_DIR):
+        shutil.rmtree(DOWNLOAD_DIR)
+    if os.path.exists(PACKS_DIR):
+        shutil.rmtree(PACKS_DIR)
+
+    os.makedirs(DOWNLOAD_DIR, exist_ok = True)
+    os.makedirs(PACKS_DIR, exist_ok = True)
+
+
+    # Download each pack
     for family, pack in latest_packs.items():
-        print(f'Latest version of pack {family} is {pack.get_version_string()}')
+        pack_url = PACKS_REPO_URL + pack.get_path()
+
+        with urllib.request.urlopen(pack_url, data=None, timeout=10.0) as req:
+            pack_dl_path = DOWNLOAD_DIR / pack.get_name()
+
+            print(f'Downloading pack {pack.get_name()} to {pack_dl_path}')
+
+            with open(pack_dl_path, 'wb', encoding=None) as dl:
+                dl.write(req.read())
+
