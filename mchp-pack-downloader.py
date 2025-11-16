@@ -43,10 +43,12 @@
 #
 
 from html.parser import HTMLParser
+import multiprocessing
 from pathlib import Path
 import os
 import shutil
 import urllib.request
+import zipfile
 
 PACKS_REPO_URL = 'https://packs.download.microchip.com/'
 PACKS_EXTENSION = '.atpack'
@@ -100,8 +102,6 @@ class DevicePack:
                                  int(parts[4]))
         except ValueError:
             raise ValueError(f'Unable to parse version from pack {self.path}')
-
-        self.extension = parts[5]
 
 
     def keep_this_pack(self) -> bool:
@@ -183,12 +183,6 @@ class DevicePack:
         return self.version_str
 
 
-    def get_extension(self) -> str:
-        '''Return the extension of the pack filename.
-        '''
-        return self.extension
-
-
 
 class PacksHtmlParser(HTMLParser):
     '''A super simple subclass of HTMLParser to look for download links for packs and put those into
@@ -245,23 +239,46 @@ class PacksHtmlParser(HTMLParser):
 
 
 
+def get_pack(pack: DevicePack):
+    '''Download and extract the given DevicePack.
+    '''
+    pack_url = PACKS_REPO_URL + pack.get_path()
+    pack_dl_path = DOWNLOAD_DIR / pack.get_name()
+    pack_extract_path = PACKS_DIR / pack.get_family() / pack.get_version_string()
+
+    # Download.
+    with urllib.request.urlopen(pack_url, data=None, timeout=10.0) as req:
+        pack_dl_path = DOWNLOAD_DIR / pack.get_name()
+
+        print(f'Downloading pack {pack.get_name()} to {pack_dl_path}')
+
+        with open(pack_dl_path, 'wb', encoding=None) as dl:
+            dl.write(req.read())
+
+    # Extract. The .atpack files are actually ZIP files.
+    with zipfile.ZipFile(pack_dl_path, mode='r') as archive:
+        print(f'Extracting pack {pack.get_name()} to {pack_extract_path}')
+        archive.extractall(path=pack_extract_path)
+
+
+
 if '__main__' == __name__:
     pack_links: list[DevicePack] = []
 
+    # Read the URL to find our pack download links.
+    #
     with urllib.request.urlopen(PACKS_REPO_URL, data=None, timeout=10.0) as req:
         # Grab the HTML from the packs URL.
         html_data: str = req.read().decode('utf-8')
 
-        # Create our custom HTML parser and pass the HTML to that.
         parser = PacksHtmlParser()
         parser.feed(html_data)
         parser.close()
 
-        # Now that the parser has parsed the HTML, we can see what links to packs it has found.
         pack_links = parser.get_pack_links()
-    
 
     # Now that we have our links, search for and keep only the latest versions of packs.
+    #
     latest_packs: dict[str, DevicePack] = {}
     for pack in pack_links:
         family = pack.get_family()
@@ -272,26 +289,26 @@ if '__main__' == __name__:
         else:
             latest_packs[family] = pack
     
-
-    # Clear out any previously downloaded pack data
+    # Clear out any previously downloaded pack data.
+    #
     if os.path.exists(DOWNLOAD_DIR):
         shutil.rmtree(DOWNLOAD_DIR)
     if os.path.exists(PACKS_DIR):
         shutil.rmtree(PACKS_DIR)
 
+    # os.makedirs(PACKS_DIR, exist_ok = True)
     os.makedirs(DOWNLOAD_DIR, exist_ok = True)
-    os.makedirs(PACKS_DIR, exist_ok = True)
 
+    # Download each pack and extract its contents.
+    # Testing suggests that going beyond 4 jobs at once makes things worse.
+    #
+    jobs = os.cpu_count()
+    if not jobs  or  jobs < 4:
+        jobs = 2
+    else:
+        jobs = 4
 
-    # Download each pack
-    for family, pack in latest_packs.items():
-        pack_url = PACKS_REPO_URL + pack.get_path()
+    with multiprocessing.Pool(processes=jobs) as pool:
+        pool.map(get_pack, latest_packs.values())
 
-        with urllib.request.urlopen(pack_url, data=None, timeout=10.0) as req:
-            pack_dl_path = DOWNLOAD_DIR / pack.get_name()
-
-            print(f'Downloading pack {pack.get_name()} to {pack_dl_path}')
-
-            with open(pack_dl_path, 'wb', encoding=None) as dl:
-                dl.write(req.read())
-
+    print('Done!')
